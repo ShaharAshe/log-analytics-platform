@@ -64,3 +64,35 @@ topic.
 **Trade-off:** Running fewer consumers than partitions means each consumer holds
 several partitions. That is fine, but it does mean partition count alone does not
 tell us actual parallelism.
+
+---
+
+## ADR-004: Return 202 Accepted even when Kafka is unavailable
+
+**Context:** Other teams' services (e.g. `payment-api`) send logs to the ingest
+service over HTTP. When Kafka is unreachable, `KafkaTemplate.send()` fails during
+the metadata step after `max.block.ms` (3 s) and throws `KafkaException` on the
+request thread. Without handling, Spring returns 500.
+
+**Decision:** Treat sending as best effort. `LogProducer` catches
+`KafkaException` and logs it at ERROR with the service, trace ID and full
+exception. The endpoint always returns 202 Accepted.
+
+**Rationale:** Callers monitor the status codes they receive and alert on 5xx.
+Returning 503 would page the on-call engineers of every sending team for an
+outage in our system, which they cannot fix and have no useful action for. The
+outage still needs to be noticed, but by us: the alert belongs in our own
+monitoring, not in theirs.
+
+**Alternatives considered:**
+- 503 Service Unavailable — honest and retry-friendly, but pushes our outage onto
+  every sender's on-call and requires each sender to buffer and retry.
+- 500 (the default) — misreports a dependency outage as a bug in our code.
+
+**Trade-off:**
+- Logs sent while Kafka is down are lost, and senders get no signal. Until we add
+  a dropped-logs metric with an alert, the only trace is the ERROR log line.
+- 202 does not remove the wait: each request still blocks for up to
+  `max.block.ms` before returning (measured ~4.5 s with Kafka stopped). At high
+  volume this ties up sender threads. Lowering `max.block.ms` shortens the wait
+  but drops logs during brief Kafka hiccups.
