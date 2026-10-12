@@ -5,18 +5,18 @@ spring:
     bootstrap-servers: localhost:9092
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
       acks: all
       properties:
         max.block.ms: 3000
-
+---
 logpipe:
   topic: raw-logs
   # Increasing this adds partitions to the existing topic at startup, which
   # remaps service keys to different partitions and breaks per-service
   # counters and ordering. See ADR-003. Decreasing is not supported.
   partitions: 12
-
+---
 logging:
   level:
     com.logpipe: debug
