@@ -9,6 +9,7 @@ spring:
       acks: all
       properties:
         max.block.ms: 3000
+        spring.json.add.type.headers: false
 ---
 logpipe:
   topic: raw-logs
