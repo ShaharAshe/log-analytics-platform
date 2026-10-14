@@ -7,7 +7,11 @@ spring:
       group-id: log-processor
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+      properties:
+        spring.json.value.default.type: com.logpipe.processor.dto.LogEvent
+        spring.json.use.type.headers: false
+        spring.json.trusted.packages: com.logpipe.processor.dto
 ---
 logpipe:
   topic: raw-logs
