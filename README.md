@@ -68,10 +68,16 @@ versus partition count).
 2. Each instance polls its partitions for messages after the group's committed offset.
    If the group has no committed offset for a partition yet, it starts from the
    earliest message (`auto-offset-reset: earliest`).
-3. For each message, `RawLogListener` logs the partition, offset, key and value.
-4. After the listener returns, Spring commits the offset, moving the group's position
+3. Each message is deserialized from JSON into the processor's own `LogEvent` type.
+   Type headers are ignored: the JSON payload is the only contract between the
+   services, so ingest can change its internal classes freely.
+4. For each message, `RawLogListener` logs the partition, offset, service and level.
+5. After the listener returns, Spring commits the offset, moving the group's position
    forward. Because the commit happens after processing, delivery is at-least-once: a
    crash between processing and commit means the message is processed again.
+6. A message that is not valid JSON is logged and skipped instead of retried.
+   Without this, a single malformed message (a "poison pill") would fail on every
+   poll and block the whole consumer.
 
 ## Design decisions
 
@@ -148,7 +154,7 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/events/logs `
 The request returns `202 Accepted`. The processor logs a line like:
 
 ```
-Partition: 10 Offset: 0 Key: payment-api Value: {"timestamp":"2026-10-13T12:00:00Z","service":"payment-api",...}
+Partition: 10 Offset: 0 Key: payment-api Service: payment-api Level: ERROR
 ```
 
 ### 4. Inspect the consumer group
@@ -202,6 +208,7 @@ log-analytics-platform/
 │       └── service/          Kafka producer
 └── processor/                Kafka consumer
     └── src/main/java/com/logpipe/processor/
+        ├── dto/              LogEvent (the processor's own copy)
         └── listener/         RawLogListener
 ```
 
@@ -212,7 +219,9 @@ log-analytics-platform/
 - [x] Topic created from code with 12 partitions
 - [x] 202 Accepted with error logging when Kafka is unavailable (ADR-004)
 - [x] Processor service: consumer group with at-least-once delivery
-- [ ] Deserialize messages into a typed `LogEvent` in the processor
+- [x] Typed `LogEvent` deserialization in the processor, with no type headers between services
+- [x] Malformed messages are logged and skipped instead of blocking the consumer
+- [ ] Dead letter topic for malformed messages
 - [ ] Redis: per-service rolling error-rate windows and deduplication
 - [ ] Anomaly detection and alerting
 - [ ] Postgres: hourly aggregates with idempotent writes
