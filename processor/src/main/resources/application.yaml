@@ -31,6 +31,11 @@ spring:
         # Security: only classes from this package may be built from message
         # data, so a crafted message cannot make us instantiate arbitrary classes.
         spring.json.trusted.packages: com.logpipe.processor.dto
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+      acks: all
 
 logpipe:
   topic: raw-logs
+  partitions: 12
