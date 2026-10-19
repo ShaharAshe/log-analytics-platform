@@ -4,15 +4,33 @@ spring:
   kafka:
     bootstrap-servers: localhost:9092
     consumer:
+      # Every processor instance joins this group. Kafka splits the partitions
+      # among the instances and stores the group's committed offsets.
       group-id: log-processor
+      # Applies only when the group has no committed offset for a partition,
+      # e.g. on its first run. "earliest" also processes logs that accumulated
+      # before the processor existed; the default "latest" would skip them.
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Wraps the JSON deserializer. Without it, a malformed message fails
+      # inside poll(), is never committed, and is retried forever, blocking
+      # the consumer (poison pill). With it, the message is logged and skipped.
+      # Cost: skipped messages are not processed. If every message fails
+      # (e.g. a config error), all of them are skipped while lag stays at 0.
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
+        # The deserializer that does the actual work.
         spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+        # The class to build from the JSON. The consumer decides this itself
+        # instead of trusting a type header. Without it, no message can be
+        # deserialized, and every one is skipped.
         spring.json.value.default.type: com.logpipe.processor.dto.LogEvent
+        # Ignore __TypeId__ headers. Ingest no longer sends them, but older
+        # messages in the topic still carry ingest's class name.
         spring.json.use.type.headers: false
+        # Security: only classes from this package may be built from message
+        # data, so a crafted message cannot make us instantiate arbitrary classes.
         spring.json.trusted.packages: com.logpipe.processor.dto
----
+
 logpipe:
   topic: raw-logs

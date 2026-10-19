@@ -4,20 +4,33 @@ spring:
   kafka:
     bootstrap-servers: localhost:9092
     producer:
+      # The key is the service name. Kafka routes by hash(key) % partitions,
+      # so all logs from one service land on the same partition (ADR-002).
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Jackson 3 based serializer. Spring Boot 4 ships Jackson 3; the older
+      # JsonSerializer needs Jackson 2, which is not on the classpath.
       value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+      # A write counts as sent only after all in-sync replicas have it.
+      # With a single broker this equals acks=1, but it is the safe default.
       acks: all
       properties:
+        # How long send() may block the HTTP request thread while fetching
+        # metadata. Default is 60s; with Kafka down, every request would hang
+        # that long. 3s keeps senders responsive (ADR-004).
         max.block.ms: 3000
+        # The default __TypeId__ header carries ingest's internal class name,
+        # coupling consumers to it. The JSON payload is the contract; each
+        # consumer chooses its own target type.
         spring.json.add.type.headers: false
----
+
 logpipe:
   topic: raw-logs
   # Increasing this adds partitions to the existing topic at startup, which
   # remaps service keys to different partitions and breaks per-service
   # counters and ordering. See ADR-003. Decreasing is not supported.
   partitions: 12
----
+
 logging:
   level:
+    # DEBUG shows the partition and offset of every successful send.
     com.logpipe: debug
