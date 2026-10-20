@@ -96,3 +96,60 @@ monitoring, not in theirs.
   `max.block.ms` before returning (measured ~4.5 s with Kafka stopped). At high
   volume this ties up sender threads. Lowering `max.block.ms` shortens the wait
   but drops logs during brief Kafka hiccups.
+
+---
+
+## ADR-005: Keep failed messages in a dead letter topic
+
+**Context**
+
+Malformed messages were logged and dropped (`ErrorHandlingDeserializer`, see the
+poison pill fix). The consumer no longer got stuck, but the message itself was lost:
+there was no way to see what was sent, fix it, or send it again.
+
+**Decision**
+
+- Messages that fail are published to a dead letter topic, `raw-logs-dlt`, and the
+  consumer moves on.
+- The processor creates `raw-logs-dlt` on startup, with the same number of partitions
+  as `raw-logs` (12).
+- Deserialization errors go to the DLT immediately, without retries.
+- If the listener itself fails, the message is retried twice, 1 second apart
+  (3 attempts in total), before it goes to the DLT.
+- The message value is published as its original raw bytes (`ByteArraySerializer`).
+  The error details and the original topic, partition and offset are added as headers.
+
+**Rationale**
+
+- A DLT means a failed message is neither lost nor allowed to block the partition.
+- The recoverer publishes to the same partition number the message came from, so a
+  message from partition 7 is found in partition 7 of the DLT.
+- A failed message may not be valid JSON. A JSON serializer would not fail, but it
+  would store a base64 string instead of the original message, so replaying it would
+  send something different from what was sent.
+- Retrying cannot fix broken data, so deserialization errors are not retried.
+- Retries are few and short because the partition is blocked while they wait. A more
+  detailed retry policy will be chosen when the listener has a dependency that can
+  actually fail (Redis) and can be tested.
+
+**Alternatives considered**
+
+- *Keep logging and dropping failed messages.* Simple, but the message is lost and
+  cannot be inspected or replayed.
+- *A DLT with a single partition.* It works: when the target partition does not
+  exist, the recoverer lets Kafka choose one. Rejected because the partition mapping
+  is lost and a warning is logged for every failed message.
+
+**Trade-offs**
+
+- *A failed dependency is not a bad message.* If Redis is down, every message fails,
+  including valid ones. After the retries, all of them go to the DLT, and the
+  pipeline appears to work while processing nothing. Retries and a DLT fit bad
+  messages, not outages. Pausing the consumer until the dependency recovers will be
+  handled together with Redis.
+- *Only raw bytes can be published.* When deserialization succeeds and the listener
+  fails, the recoverer will try to publish a `LogEvent` object, which
+  `ByteArraySerializer` cannot handle, and publishing to the DLT will fail. This
+  needs a second template for `LogEvent` values once the listener can fail.
+- *Retries block the partition.* While a message waits between retries, the messages
+  behind it in the same partition wait too (up to about 2 seconds per message).
