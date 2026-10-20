@@ -31,11 +31,18 @@ spring:
         # Security: only classes from this package may be built from message
         # data, so a crafted message cannot make us instantiate arbitrary classes.
         spring.json.trusted.packages: com.logpipe.processor.dto
+    # Used only by the dead letter recoverer to publish failed messages
+    # to raw-logs-dlt. The processor does not produce logs itself.
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Failed messages are republished as their original raw bytes, because
+      # they may not be valid JSON. A JSON serializer would not fail, but it
+      # would store a base64 string instead of the original message.
       value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
       acks: all
 
 logpipe:
   topic: raw-logs
+  # Partition count of raw-logs-dlt. Must match raw-logs (set in ingest):
+  # a failed message is sent to the same partition number it came from.
   partitions: 12
