@@ -17,6 +17,11 @@ services:
       KAFKA_LOG_DIRS: /var/lib/kafka/data
     volumes:
       - kafka-data:/var/lib/kafka/data
+  redis:
+    image: redis:7.4
+    container_name: redis
+    ports:
+      - "6379:6379"
 ---
 volumes:
   kafka-data:
