@@ -40,6 +40,10 @@ spring:
       # would store a base64 string instead of the original message.
       value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
       acks: all
+  data:
+    redis:
+      host: localhost
+      port: 6379
 
 logpipe:
   topic: raw-logs
