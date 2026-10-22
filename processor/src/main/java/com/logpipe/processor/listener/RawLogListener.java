@@ -1,6 +1,6 @@
 package com.logpipe.processor.listener;
 
-import com.logpipe.processor.dto.Levels;
+import com.logpipe.processor.dto.Level;
 import com.logpipe.processor.dto.LogEvent;
 import com.logpipe.processor.service.ErrorCounter;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -26,7 +26,7 @@ public class RawLogListener {
         LogEvent logEvent = record.value();
         logger.info("Partition: {} Offset: {} Key: {} Service: {} Level: {} Message: {} TraceId: {} DurationMs: {}",
                 record.partition(), record.offset(), record.key(), logEvent.service(), logEvent.level(), logEvent.message(), logEvent.traceId(), logEvent.durationMs());
-        if (Objects.equals(logEvent.level(), Levels.ERROR.name())) {
+        if (Objects.equals(logEvent.level(), Level.ERROR.name())) {
             long countServiceErrors = errorCounter.increment(logEvent.service());
             logger.info("Errors count for service: {} are {}", logEvent.service(), countServiceErrors);
         }
