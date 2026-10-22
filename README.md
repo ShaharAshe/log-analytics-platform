@@ -118,13 +118,13 @@ Each decision is recorded with its context, rationale and trade-offs in
 
 Maven is not required; each service ships with the Maven Wrapper.
 
-### 1. Start Kafka
+### 1. Start the infrastructure
 
 ```bash
 docker compose up -d
 ```
 
-Kafka data lives in the `kafka-data` volume, so topics and messages survive container
+This starts Kafka and Redis. Redis is not used by the services yet. Kafka data lives in the `kafka-data` volume, so topics and messages survive container
 restarts. `docker compose down -v` deletes them.
 
 ### 2. Start the services
@@ -228,7 +228,7 @@ confirmed asynchronously.
 
 ```
 log-analytics-platform/
-├── docker-compose.yml        Kafka (KRaft) with a persistent volume
+├── docker-compose.yml        Kafka (KRaft) with a persistent volume, and Redis
 ├── docs/
 │   └── decisions.md          Architecture decision records
 ├── ingest/                   HTTP intake → Kafka producer
