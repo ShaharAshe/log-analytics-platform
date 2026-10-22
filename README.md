@@ -27,12 +27,12 @@ flowchart LR
   I -->|key = service| K[(Kafka<br/>raw-logs<br/>12 partitions)]
   K -->|group: log-processor| P[processor]
   P -->|failed messages| D[(Kafka<br/>raw-logs-dlt)]
-  P -.-> R[(Redis<br/>rolling windows)]
+  P -->|error counters| R[(Redis)]
   P -.-> DB[(Postgres<br/>aggregates)]
   R -.-> A[Anomaly detection<br/>and alerts]
 
   classDef planned stroke-dasharray: 5 5
-  class R,DB,A planned
+  class DB,A planned
 ```
 
 Solid lines are built. Dashed components are planned.
@@ -43,6 +43,7 @@ Solid lines are built. Dashed components are planned.
 | **Kafka** | Durable, append-only log. Absorbs spikes, decouples intake from processing, and keeps raw logs for replay. |
 | **processor** | Spring Boot service. Consumes `raw-logs` as part of the `log-processor` consumer group. |
 | **raw-logs-dlt** | Dead letter topic. Holds messages that could not be processed, unchanged, with the error details in headers. |
+| **Redis** | Holds per-service error counters outside the processor, so they survive restarts and rebalances. |
 
 Ingest and processor are separate services on purpose: a processing failure or
 redeploy does not stop log intake, and each service scales on its own axis (HTTP load
@@ -74,6 +75,8 @@ versus partition count).
    Type headers are ignored: the JSON payload is the only contract between the
    services, so ingest can change its internal classes freely.
 4. For each message, `RawLogListener` logs the partition, offset, service and level.
+   For `ERROR` logs, it increments the service's counter in Redis (`error:<service>`)
+   with `INCR`, which is atomic, so concurrent instances never lose an update.
 5. After the listener returns, Spring commits the offset, moving the group's position
    forward. Because the commit happens after processing, delivery is at-least-once: a
    crash between processing and commit means the message is processed again.
@@ -88,6 +91,13 @@ versus partition count).
      stack trace, and the original topic, partition and offset. The message can be
      inspected and replayed.
    - The DLT has 12 partitions because a failed message keeps its partition number.
+
+**Known limitation: Redis outages.** When Redis is down, the listener fails for every
+`ERROR` log. After the retries, publishing to the DLT also fails (the DLT serializer
+handles raw bytes, not `LogEvent` objects), so the consumer keeps retrying the same
+message until Redis returns. No message is lost and processing resumes on its own, but
+the partition is blocked and the logs show a misleading serializer error. Separating
+infrastructure failures from bad messages is the next step on the roadmap.
 
 ## Design decisions
 
@@ -106,6 +116,7 @@ Each decision is recorded with its context, rationale and trade-offs in
 
 - Java 17, Spring Boot 4, Spring for Apache Kafka
 - Apache Kafka 3.9 (KRaft mode, no ZooKeeper)
+- Redis 7.4, Spring Data Redis
 - Docker Compose for local infrastructure
 - Maven (via the Maven Wrapper)
 
@@ -124,8 +135,9 @@ Maven is not required; each service ships with the Maven Wrapper.
 docker compose up -d
 ```
 
-This starts Kafka and Redis. Redis is not used by the services yet. Kafka data lives in the `kafka-data` volume, so topics and messages survive container
-restarts. `docker compose down -v` deletes them.
+This starts Kafka and Redis. Kafka data lives in the `kafka-data` volume, so topics and
+messages survive container restarts. `docker compose down -v` deletes them. Redis has
+no volume: its counters cover recent activity, so losing them on restart is acceptable.
 
 ### 2. Start the services
 
@@ -178,7 +190,15 @@ docker exec -it kafka /opt/kafka/bin/kafka-consumer-groups.sh \
 Shows, per partition, the group's committed offset, the end of the log, and the lag
 between them.
 
-### 5. See a failed message in the dead letter topic
+### 5. Check the error counter
+
+```bash
+docker exec -it redis redis-cli GET error:payment-api
+```
+
+Returns the number of `ERROR` logs counted for `payment-api`.
+
+### 6. See a failed message in the dead letter topic
 
 Send a message that is not JSON:
 
@@ -223,6 +243,8 @@ confirmed asynchronously.
 | `spring.kafka.producer.properties.max.block.ms` | ingest | `3000` | How long `send()` may block when Kafka is unavailable |
 | `spring.kafka.consumer.group-id` | processor | `log-processor` | Consumer group |
 | `spring.kafka.consumer.auto-offset-reset` | processor | `earliest` | Where a new group starts reading |
+| `logpipe.partitions` | processor | `12` | Partition count of `raw-logs-dlt`. Must match `raw-logs`. |
+| `spring.data.redis.host` / `port` | processor | `localhost` / `6379` | Redis connection |
 
 ## Project structure
 
@@ -240,8 +262,9 @@ log-analytics-platform/
 └── processor/                Kafka consumer
     └── src/main/java/com/logpipe/processor/
         ├── config/           Retries and the dead letter topic
-        ├── dto/              LogEvent (the processor's own copy)
-        └── listener/         RawLogListener
+        ├── dto/              LogEvent (the processor's own copy), Level
+        ├── listener/         RawLogListener
+        └── service/          ErrorCounter (Redis)
 ```
 
 ## Roadmap
@@ -254,7 +277,9 @@ log-analytics-platform/
 - [x] Typed `LogEvent` deserialization in the processor, with no type headers between services
 - [x] Malformed messages are logged and skipped instead of blocking the consumer
 - [x] Dead letter topic for failed messages, with retries for listener failures
-- [ ] Redis: per-service rolling error-rate windows and deduplication
+- [x] Redis: per-service error counters
+- [ ] Separate infrastructure failures (Redis down) from bad messages in error handling
+- [ ] Redis: rolling error-rate windows and deduplication
 - [ ] Anomaly detection and alerting
 - [ ] Postgres: hourly aggregates with idempotent writes
 - [ ] Docker images for both services and deployment to AWS
