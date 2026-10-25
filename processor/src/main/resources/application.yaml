@@ -44,6 +44,10 @@ spring:
     redis:
       host: localhost
       port: 6379
+      # Fail a Redis command after 2s instead of the Lettuce default of 60s,
+      # so an outage is detected quickly and handled by the error handler.
+      timeout: 2s
+      connect-timeout: 2s
 
 logpipe:
   topic: raw-logs
