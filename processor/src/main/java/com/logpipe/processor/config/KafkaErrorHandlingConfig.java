@@ -42,10 +42,9 @@ public class KafkaErrorHandlingConfig {
 
         DefaultErrorHandler defaultErrorHandler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 2));
         defaultErrorHandler.setBackOffFunction((record, exception) ->
-                isInfrastructureFailure(exception) ?
-                        new FixedBackOff(5000L, FixedBackOff.UNLIMITED_ATTEMPTS)
-                        :
-                        null
+                isInfrastructureFailure(exception)
+                        ? new FixedBackOff(5000L, FixedBackOff.UNLIMITED_ATTEMPTS)
+                        : null
         );
         defaultErrorHandler.addNotRetryableExceptions(InvalidLogEventException.class);
         return defaultErrorHandler;

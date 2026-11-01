@@ -74,30 +74,38 @@ versus partition count).
 3. Each message is deserialized from JSON into the processor's own `LogEvent` type.
    Type headers are ignored: the JSON payload is the only contract between the
    services, so ingest can change its internal classes freely.
-4. For each message, `RawLogListener` logs the partition, offset, service and level.
+4. For each message, `RawLogListener` rejects logs without a `service` (see
+   [Error handling](#error-handling)), then logs the partition, offset, service and level.
    For `ERROR` logs, it increments the service's counter in Redis (`error:<service>`)
    with `INCR`, which is atomic, so concurrent instances never lose an update.
 5. After the listener returns, Spring commits the offset, moving the group's position
    forward. Because the commit happens after processing, delivery is at-least-once: a
    crash between processing and commit means the message is processed again.
-6. A message that fails is sent to the `raw-logs-dlt` dead letter topic, and the
-   consumer moves on. Without this, a single malformed message (a "poison pill")
-   would fail on every poll and block the whole consumer.
-   - A message that is not valid JSON goes to the DLT right away. Retrying cannot
-     fix broken data.
-   - If the listener itself fails, it is retried twice, one second apart, before
-     going to the DLT.
-   - The DLT keeps the original bytes unchanged, plus headers with the exception,
-     stack trace, and the original topic, partition and offset. The message can be
-     inspected and replayed.
+6. A bad message is sent to the `raw-logs-dlt` dead letter topic, and the consumer
+   moves on. Without this, a single malformed message (a "poison pill") would fail on
+   every poll and block the whole consumer.
+   - The DLT message carries headers with the exception, stack trace, and the original
+     topic, partition and offset, so it can be inspected and replayed.
    - The DLT has 12 partitions because a failed message keeps its partition number.
 
-**Known limitation: Redis outages.** When Redis is down, the listener fails for every
-`ERROR` log. After the retries, publishing to the DLT also fails (the DLT serializer
-handles raw bytes, not `LogEvent` objects), so the consumer keeps retrying the same
-message until Redis returns. No message is lost and processing resumes on its own, but
-the partition is blocked and the logs show a misleading serializer error. Separating
-infrastructure failures from bad messages is the next step on the roadmap.
+### Error handling
+
+Failures are handled by type, because a retry only helps when the cause is temporary:
+
+| Failure | Example | Handling |
+| --- | --- | --- |
+| Bad message | Not valid JSON, or a log without `service` | Published to `raw-logs-dlt` immediately |
+| Infrastructure | Redis down, Redis command timeout | Retried every 5 s with no limit; never sent to the DLT |
+| Unexpected | Any other exception | Retried twice, 1 s apart, then published to the DLT |
+
+During a Redis outage every message would fail, valid ones included. Sending them to
+the DLT would drain the topic silently while consumer lag stays at 0. Instead, messages
+wait in Kafka, lag grows and makes the outage visible, and processing resumes on its
+own when Redis returns. The Redis command timeout is 2 s, so an outage is detected
+quickly instead of after the Lettuce default of 60 s.
+
+The DLT stores the original bytes for messages that could not be deserialized, and a
+JSON copy of the `LogEvent` for messages the listener rejected.
 
 ## Design decisions
 
@@ -111,6 +119,7 @@ Each decision is recorded with its context, rationale and trade-offs in
 | 003 | 12 partitions | Room to scale consumers without adding partitions, which would remap keys. |
 | 004 | 202 even when Kafka is down | Do not page sending teams for our outage; the alert belongs on our side. |
 | 005 | Dead letter topic for failed messages | Keep failed messages instead of dropping them, without blocking the consumer. |
+| 006 | Handle failures by type | Retry infrastructure failures without limit; send only bad messages to the DLT. |
 
 ## Tech stack
 
@@ -245,6 +254,7 @@ confirmed asynchronously.
 | `spring.kafka.consumer.auto-offset-reset` | processor | `earliest` | Where a new group starts reading |
 | `logpipe.partitions` | processor | `12` | Partition count of `raw-logs-dlt`. Must match `raw-logs`. |
 | `spring.data.redis.host` / `port` | processor | `localhost` / `6379` | Redis connection |
+| `spring.data.redis.timeout` / `connect-timeout` | processor | `2s` | How long a Redis command or connection may take before it counts as an outage |
 
 ## Project structure
 
@@ -261,8 +271,9 @@ log-analytics-platform/
 │       └── service/          Kafka producer
 └── processor/                Kafka consumer
     └── src/main/java/com/logpipe/processor/
-        ├── config/           Retries and the dead letter topic
+        ├── config/           Error handling: retries by failure type, dead letter topic
         ├── dto/              LogEvent (the processor's own copy), Level
+        ├── exception/        InvalidLogEventException
         ├── listener/         RawLogListener
         └── service/          ErrorCounter (Redis)
 ```
@@ -278,7 +289,7 @@ log-analytics-platform/
 - [x] Malformed messages are logged and skipped instead of blocking the consumer
 - [x] Dead letter topic for failed messages, with retries for listener failures
 - [x] Redis: per-service error counters
-- [ ] Separate infrastructure failures (Redis down) from bad messages in error handling
+- [x] Separate infrastructure failures (Redis down) from bad messages in error handling
 - [ ] Redis: rolling error-rate windows and deduplication
 - [ ] Anomaly detection and alerting
 - [ ] Postgres: hourly aggregates with idempotent writes

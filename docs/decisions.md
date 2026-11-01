@@ -153,3 +153,77 @@ there was no way to see what was sent, fix it, or send it again.
   needs a second template for `LogEvent` values once the listener can fail.
 - *Retries block the partition.* While a message waits between retries, the messages
   behind it in the same partition wait too (up to about 2 seconds per message).
+
+> Trade-offs 1 and 2 are addressed by ADR-006.
+
+---
+
+## ADR-006: Handle failures by type: retry infrastructure failures, send bad messages to the DLT
+
+**Context**
+
+With ADR-005 in place, the listener started using Redis. Stopping Redis on purpose
+showed two problems:
+
+- Every `ERROR` log failed, valid ones included. After the retries, publishing to the
+  DLT also failed (`ByteArraySerializer` cannot handle a `LogEvent`), so the consumer
+  looped. No message was lost, but only by accident: had the DLT worked, every valid
+  message would have been moved to it while consumer lag stayed at 0.
+- When an open Redis connection drops, Lettuce does not fail. It queues the command,
+  reconnects in the background, and fails only after its default command timeout of
+  60 seconds, with a timeout exception rather than a connection error.
+
+In addition, logs without a `service` were counted under the key `error:null`, which
+silently produced wrong data.
+
+**Decision**
+
+- Failures are classified by type, walking the exception's cause chain, because Spring
+  wraps listener exceptions in `ListenerExecutionFailedException`.
+- *Bad messages* (`DeserializationException`, `InvalidLogEventException`) are not
+  retried and go to the DLT immediately.
+- *Infrastructure failures* (`RedisConnectionFailureException`, `QueryTimeoutException`)
+  are retried every 5 seconds with no limit, and never go to the DLT.
+- *Any other exception* is retried twice, 1 second apart, then goes to the DLT.
+- The Redis command and connect timeouts are set to 2 seconds.
+- The listener throws `InvalidLogEventException` for a log without a `service`.
+- The DLT recoverer uses two templates: raw bytes for messages that failed
+  deserialization, and JSON for `LogEvent` values the listener rejected. The JSON
+  template is created inside the configuration, not as a bean, so it does not replace
+  the auto-configured template.
+
+**Rationale**
+
+- An infrastructure failure affects every message, not one. The messages are valid and
+  wait safely in Kafka. Growing lag makes the outage visible, and processing resumes on
+  its own when Redis returns.
+- A bad message fails the same way on every attempt, so retrying only delays the
+  messages behind it.
+- Unexpected exceptions keep a small retry budget, so a bug cannot block the consumer
+  forever.
+- A 2-second timeout detects an outage quickly, and the timeout exception is
+  classified as an infrastructure failure, so it never reaches the DLT.
+- A custom exception is classified safely: a generic one such as
+  `IllegalArgumentException` could come from any library.
+
+**Alternatives considered**
+
+- *Unlimited retries for every exception.* Rejected: a bug such as a
+  `NullPointerException` would block the consumer forever, like a poison pill.
+- *Keep the Lettuce default timeout of 60 seconds.* Rejected: an outage is detected
+  only after a minute, and every attempt holds the partition for that long.
+- *Count logs without a `service` under a placeholder key.* Rejected: it mixes
+  unrelated logs into one counter and hides the real problem.
+
+**Trade-offs**
+
+- During a Redis outage the whole consumer waits, including logs that are not `ERROR`
+  and would not need Redis.
+- The DLT holds two formats: original bytes, or a JSON copy rebuilt from `LogEvent`.
+  The JSON copy is not byte-identical to the original (missing fields appear as
+  `null`).
+- While retrying, the logs show only `Record in retry`, not the cause. A metric or a
+  warning will be added with monitoring.
+- The JSON template repeats producer settings from the YAML (bootstrap servers, acks).
+- Any misconfiguration of a DLT template turns every failure into a loop, because a
+  message whose DLT publish fails is never committed.
