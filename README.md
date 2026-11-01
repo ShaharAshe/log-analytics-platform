@@ -51,6 +51,9 @@ versus partition count).
 
 ## How a log flows through the system
 
+A diagram of the full flow, including every failure path, is in
+[`docs/message-flow.md`](docs/message-flow.md).
+
 **Ingest**
 
 1. A service sends a log as JSON to `POST /events/logs`.
@@ -262,7 +265,8 @@ confirmed asynchronously.
 log-analytics-platform/
 ├── docker-compose.yml        Kafka (KRaft) with a persistent volume, and Redis
 ├── docs/
-│   └── decisions.md          Architecture decision records
+│   ├── decisions.md          Architecture decision records
+│   └── message-flow.md       Flow of one log, including failure paths
 ├── ingest/                   HTTP intake → Kafka producer
 │   └── src/main/java/com/logpipe/ingest/
 │       ├── config/           Topic creation on startup
