@@ -4,6 +4,7 @@ import com.logpipe.processor.dto.Level;
 import com.logpipe.processor.dto.LogEvent;
 import com.logpipe.processor.exception.InvalidLogEventException;
 import com.logpipe.processor.service.ErrorCounter;
+import com.logpipe.processor.service.ErrorWindow;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,9 +18,11 @@ public class RawLogListener {
 
     private final Logger logger = LoggerFactory.getLogger(this.getClass());
     private final ErrorCounter errorCounter;
+    private final ErrorWindow errorWindow;
 
-    public RawLogListener(ErrorCounter errorCounter) {
+    public RawLogListener(ErrorCounter errorCounter, ErrorWindow errorWindow) {
         this.errorCounter = errorCounter;
+        this.errorWindow = errorWindow;
     }
 
     @KafkaListener(topics = "${logpipe.topic}")
@@ -38,6 +41,8 @@ public class RawLogListener {
         if (Objects.equals(logEvent.level(), Level.ERROR.name())) {
             long countServiceErrors = errorCounter.increment(logEvent.service());
             logger.info("Errors count for service: {} are {}", logEvent.service(), countServiceErrors);
+            long errorsLastMinute = errorWindow.record(logEvent.service(), record.partition(), record.offset(), record.timestamp());
+            logger.info("Errors in the last minute for {}: {}", logEvent.service(), errorsLastMinute);
         }
     }
 }
