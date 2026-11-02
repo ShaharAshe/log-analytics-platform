@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 public class ErrorCounter {
 
     private static final String KEY_PREFIX = "error:";
+
     private final StringRedisTemplate stringRedisTemplate;
 
     public ErrorCounter(StringRedisTemplate stringRedisTemplate) {

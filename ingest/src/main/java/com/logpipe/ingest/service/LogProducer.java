@@ -14,9 +14,11 @@ import java.util.concurrent.CompletableFuture;
 
 @Service
 public class LogProducer {
+
     private final Logger logger = LoggerFactory.getLogger(this.getClass());
     private final KafkaTemplate<String, LogEvent> kafkaTemplate;
     private final String topic;
+
     public LogProducer(KafkaTemplate<String, LogEvent> kafkaTemplate,
                        @Value("${logpipe.topic}") String topic) {
         this.kafkaTemplate = kafkaTemplate;

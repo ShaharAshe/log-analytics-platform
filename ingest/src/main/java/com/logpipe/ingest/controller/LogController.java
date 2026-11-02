@@ -11,7 +11,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/events")
 public class LogController {
-    private  final LogProducer logProducer;
+
+    private final LogProducer logProducer;
+
     public LogController(LogProducer logProducer) {
         this.logProducer = logProducer;
     }
