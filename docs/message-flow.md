@@ -16,7 +16,7 @@ flowchart TD
     V -.->|"no: InvalidLogEventException"| DLT
     V --> L{"level is ERROR?"}
     L -->|no| CM[Commit offset]
-    L -->|yes| R["INCR error:{service}"]
+    L -->|yes| R["INCR error:{service}<br/>ZADD error-window:{service}"]
     R <--> RD[(Redis)]
     R -->|success| CM
     R -.->|"Redis down or command timeout (2 s)"| W["Retry every 5 s, no limit.<br/>Message waits in Kafka, lag grows."]
@@ -34,7 +34,7 @@ flowchart TD
 | Kafka to processor | The processor polls `raw-logs` as part of the `log-processor` consumer group. Each partition is read by one instance. | The processor is down: logs wait in Kafka and are read when it returns. |
 | Deserialize | `ErrorHandlingDeserializer` turns the JSON into the processor's own `LogEvent`. | Not valid JSON: published to the DLT immediately, as the original bytes. |
 | Validate | The listener checks that `service` is present. | Missing `service`: `InvalidLogEventException`, published to the DLT immediately, as JSON. |
-| Count | For `ERROR` logs, `INCR error:{service}` in Redis. `INCR` is atomic, so concurrent instances never lose an update. | Redis down or a command times out after 2 s: retried every 5 s with no limit. Never sent to the DLT (ADR-006). Any other exception: retried twice, 1 s apart, then published to the DLT. |
+| Count | For `ERROR` logs, `INCR error:{service}` (total) and a one-minute sliding window in the sorted set `error-window:{service}`: member `partition:offset`, score the Kafka record timestamp. Each service has one partition and so one writer, so no transaction is needed. | Redis down or a command times out after 2 s: retried every 5 s with no limit. Never sent to the DLT (ADR-006). Any other exception: retried twice, 1 s apart, then published to the DLT. |
 | Commit | The offset is committed after processing, so delivery is at-least-once. | A crash before the commit: the message is processed again. |
 
 ## Why failures take different paths

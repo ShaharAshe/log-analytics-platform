@@ -43,7 +43,7 @@ Solid lines are built. Dashed components are planned.
 | **Kafka** | Durable, append-only log. Absorbs spikes, decouples intake from processing, and keeps raw logs for replay. |
 | **processor** | Spring Boot service. Consumes `raw-logs` as part of the `log-processor` consumer group. |
 | **raw-logs-dlt** | Dead letter topic. Holds messages that could not be processed, unchanged, with the error details in headers. |
-| **Redis** | Holds per-service error counters outside the processor, so they survive restarts and rebalances. |
+| **Redis** | Holds per-service error counts (total and last minute) outside the processor, so they survive restarts and rebalances. |
 
 Ingest and processor are separate services on purpose: a processing failure or
 redeploy does not stop log intake, and each service scales on its own axis (HTTP load
@@ -79,8 +79,16 @@ A diagram of the full flow, including every failure path, is in
    services, so ingest can change its internal classes freely.
 4. For each message, `RawLogListener` rejects logs without a `service` (see
    [Error handling](#error-handling)), then logs the partition, offset, service and level.
-   For `ERROR` logs, it increments the service's counter in Redis (`error:<service>`)
-   with `INCR`, which is atomic, so concurrent instances never lose an update.
+   For `ERROR` logs, it updates two values in Redis:
+   - A total counter (`error:<service>`), with `INCR`.
+   - A one-minute sliding window (`error-window:<service>`), a sorted set with one
+     member per error. The member is `partition:offset`, so a redelivered message is
+     not counted twice. The score is the Kafka record timestamp (set when ingest
+     received the log), so a backlog processed late does not look like a spike.
+     Members older than a minute are trimmed on every write.
+
+   Each service's logs are in one partition, read by one consumer, so each Redis key
+   has a single writer and the commands need no transaction or script.
 5. After the listener returns, Spring commits the offset, moving the group's position
    forward. Because the commit happens after processing, delivery is at-least-once: a
    crash between processing and commit means the message is processed again.
@@ -202,13 +210,16 @@ docker exec -it kafka /opt/kafka/bin/kafka-consumer-groups.sh \
 Shows, per partition, the group's committed offset, the end of the log, and the lag
 between them.
 
-### 5. Check the error counter
+### 5. Check the error counts
 
 ```bash
 docker exec -it redis redis-cli GET error:payment-api
+docker exec -it redis redis-cli ZRANGE error-window:payment-api 0 -1 WITHSCORES
 ```
 
-Returns the number of `ERROR` logs counted for `payment-api`.
+The first returns the total number of `ERROR` logs for `payment-api`. The second lists
+the errors of the last minute that are still in the window: `partition:offset`, then the
+Kafka timestamp in milliseconds. A key with no errors for two minutes expires.
 
 ### 6. See a failed message in the dead letter topic
 
@@ -279,7 +290,7 @@ log-analytics-platform/
         ├── dto/              LogEvent (the processor's own copy), Level
         ├── exception/        InvalidLogEventException
         ├── listener/         RawLogListener
-        └── service/          ErrorCounter (Redis)
+        └── service/          ErrorCounter, ErrorWindow (Redis)
 ```
 
 ## Roadmap
@@ -294,7 +305,7 @@ log-analytics-platform/
 - [x] Dead letter topic for failed messages, with retries for listener failures
 - [x] Redis: per-service error counters
 - [x] Separate infrastructure failures (Redis down) from bad messages in error handling
-- [ ] Redis: rolling error-rate windows and deduplication
+- [x] Redis: one-minute sliding window per service, idempotent under redelivery
 - [ ] Anomaly detection and alerting
 - [ ] Postgres: hourly aggregates with idempotent writes
 - [ ] Docker images for both services and deployment to AWS
