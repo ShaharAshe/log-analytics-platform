@@ -1,12 +1,13 @@
 # Log Analytics Platform
 
-A log ingestion and analysis pipeline built with Java, Spring Boot and Kafka. Services
-send their logs over HTTP; the platform buffers them in Kafka and processes them in a
-separate service, with real-time per-service error tracking and anomaly detection
-planned next.
+A log ingestion and analysis pipeline built with Java, Spring Boot, Kafka and Redis.
+Services send their logs over HTTP; the platform buffers them in Kafka, processes them
+in a separate service, and tracks each service's errors in real time, including a
+one-minute sliding window. Anomaly detection is next.
 
-> **Status: work in progress.** Ingestion and consumption work end to end. See the
-> [roadmap](#roadmap) for what is built and what comes next.
+> **Status: work in progress.** Ingestion, processing, failure handling and per-service
+> error counts work end to end. See the [roadmap](#roadmap) for what is built and what
+> comes next.
 
 ## Why
 
@@ -28,11 +29,13 @@ flowchart LR
   K -->|group: log-processor| P[processor]
   P -->|failed messages| D[(Kafka<br/>raw-logs-dlt)]
   P -->|error counters| R[(Redis)]
+  R -.-> A[Anomaly detection]
+  A -.-> AL[(Kafka<br/>alerts)]
+  AL -.-> AI[AI incident<br/>investigator]
   P -.-> DB[(Postgres<br/>aggregates)]
-  R -.-> A[Anomaly detection<br/>and alerts]
 
   classDef planned stroke-dasharray: 5 5
-  class DB,A planned
+  class A,AL,AI,DB planned
 ```
 
 Solid lines are built. Dashed components are planned.
@@ -131,6 +134,7 @@ Each decision is recorded with its context, rationale and trade-offs in
 | 004 | 202 even when Kafka is down | Do not page sending teams for our outage; the alert belongs on our side. |
 | 005 | Dead letter topic for failed messages | Keep failed messages instead of dropping them, without blocking the consumer. |
 | 006 | Handle failures by type | Retry infrastructure failures without limit; send only bad messages to the DLT. |
+| 007 | One-minute sliding window | Count errors per service in a sorted set scored by Kafka record time, idempotent under redelivery. |
 
 ## Tech stack
 
@@ -306,8 +310,14 @@ log-analytics-platform/
 - [x] Redis: per-service error counters
 - [x] Separate infrastructure failures (Redis down) from bad messages in error handling
 - [x] Redis: one-minute sliding window per service, idempotent under redelivery
-- [ ] Anomaly detection and alerting
-- [ ] Postgres: hourly aggregates with idempotent writes
-- [ ] Docker images for both services and deployment to AWS
-- [ ] Grafana dashboards: throughput, consumer lag, dropped logs
+- [ ] Anomaly detection: a per-service baseline (EWMA) with a minimum floor, checked
+      by a scheduled job that runs on one instance (ShedLock)
+- [ ] Alerts with an incident lifecycle (firing, resolved), published to an `alerts` topic
+- [ ] Docker images for both services
+- [ ] Deployment to AWS with Terraform, designed for low cost
+- [ ] CI with GitHub Actions, and integration tests against real Kafka and Redis
+- [ ] Metrics and Grafana dashboards: throughput, consumer lag, DLT rate, retries
 - [ ] Load tests with documented throughput and latency
+- [ ] AI incident investigator: an agent that reads the error windows, the DLT and the
+      project's docs, triggered by alerts, with evals that measure its accuracy
+- [ ] Postgres: hourly aggregates with idempotent writes
