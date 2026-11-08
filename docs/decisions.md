@@ -227,3 +227,64 @@ silently produced wrong data.
 - The JSON template repeats producer settings from the YAML (bootstrap servers, acks).
 - Any misconfiguration of a DLT template turns every failure into a loop, because a
   message whose DLT publish fails is never committed.
+
+---
+
+## ADR-007: Count errors in a one-minute sliding window, scored by Kafka record time
+
+**Context**
+
+The processor kept one counter per service (`error:<service>`) that only grows. A count
+of 500 errors says nothing about when they happened: 500 over a week is normal, 500 in a
+minute is an outage. Anomaly detection needs the number of errors per service in the
+last minute.
+
+**Decision**
+
+- Each service has a Redis sorted set, `error-window:<service>`, with one member per
+  error.
+- The member is `partition:offset`, which is unique per Kafka message.
+- The score is the Kafka record timestamp, set by ingest's producer when it sent the
+  log (ingestion time).
+- On every write, members older than one minute are removed (`ZREMRANGEBYSCORE`), and
+  the key's TTL is reset to two minutes, so a service that stops failing loses its key.
+- The four commands run separately, with no transaction and no Lua script.
+
+**Rationale**
+
+- A sliding window counts the last 60 seconds from any moment, so a burst that crosses
+  a minute boundary is counted in full.
+- A unique member makes the count idempotent: a message processed twice under
+  at-least-once delivery updates its member instead of adding a new one.
+- Ingestion time reflects when an error entered the system, not when it was processed.
+  A backlog processed late, for example after a Redis outage, does not look like a
+  spike.
+- Each service's logs are in one partition (ADR-002), and a partition is read by one
+  consumer at a time, so each key has a single writer. This holds for any number of
+  instances or listener threads. Each command is also safe to repeat if the processor
+  crashes midway, because the message is processed again from an uncommitted offset.
+
+**Alternatives considered**
+
+- *A fixed one-minute bucket per service* (`INCR` on a key per minute). Uses one number
+  per minute, but a burst split across two buckets is never seen in full, and a
+  redelivered message is counted twice.
+- *Processing time as the score.* Turns a processed backlog into a false spike.
+- *The `timestamp` field from the log JSON (event time).* Optional, so it can be
+  missing, and set by the sender's clock, which the platform does not control.
+- *A Lua script for the four commands.* Atomic and one network round trip, but adds a
+  second language and is harder to debug, while a single writer per key makes
+  atomicity unnecessary. Reconsider if load tests show the round trips matter.
+
+**Trade-offs**
+
+- Memory grows with the error rate: one member per error, not one number per minute.
+  At 10,000 errors per minute per service this is still under a megabyte.
+- Members are trimmed only on writes. A service that stops failing keeps its last
+  errors until the key expires. Readers must count by score
+  (`ZCOUNT key <now - 60s> +inf`), not by set size (`ZCARD`).
+- Skipping the script depends on one writer per key. A key shared across services (such
+  as a global error window) or a different partition key would break that assumption
+  and require a script or a transaction.
+- The window depends on the clocks of ingest and processor agreeing. A large clock skew
+  would shift the window.
