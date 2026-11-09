@@ -313,11 +313,14 @@ log-analytics-platform/
 - [ ] Anomaly detection: a per-service baseline (EWMA) with a minimum floor, checked
       by a scheduled job that runs on one instance (ShedLock)
 - [ ] Alerts with an incident lifecycle (firing, resolved), published to an `alerts` topic
+- [ ] Notifier: sends each incident to Slack once, idempotent under redelivery
 - [ ] Docker images for both services
 - [ ] Deployment to AWS with Terraform, designed for low cost
 - [ ] CI with GitHub Actions, and integration tests against real Kafka and Redis
 - [ ] Metrics and Grafana dashboards: throughput, consumer lag, DLT rate, retries
+- [ ] Log search with Grafana Loki, and request tracing across Kafka with OpenTelemetry
 - [ ] Load tests with documented throughput and latency
 - [ ] AI incident investigator: an agent that reads the error windows, the DLT and the
-      project's docs, triggered by alerts, with evals that measure its accuracy
+      project's docs, triggered by alerts, with evals that measure its accuracy. Its
+      findings follow the alert as a Slack thread reply; the alert never waits for it
 - [ ] Postgres: hourly aggregates with idempotent writes
