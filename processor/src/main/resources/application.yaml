@@ -54,3 +54,16 @@ logpipe:
   # Partition count of raw-logs-dlt. Must match raw-logs (set in ingest):
   # a failed message is sent to the same partition number it came from.
   partitions: 12
+  detection:
+    # Length of the sliding error window per service.
+    window: 60s
+    # How often the anomaly detector runs.
+    check-interval: 10s
+    # Never alert below this many errors in the window.
+    min-errors: 10
+    # Alert when errors exceed this multiple of the service's baseline.
+    spike-factor: 5
+    # Weight of the newest minute in the baseline (EWMA), between 0 and 1.
+    ewma-alpha: 0.1
+    # Close an incident after this long below the threshold.
+    resolve-after: 30s
