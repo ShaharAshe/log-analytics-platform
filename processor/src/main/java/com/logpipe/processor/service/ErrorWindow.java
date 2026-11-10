@@ -6,6 +6,7 @@ import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.Objects;
 
 @Service
 public class ErrorWindow {
@@ -31,5 +32,11 @@ public class ErrorWindow {
         stringRedisTemplate.expire(key, keyTtl);
         zSet.removeRangeByScore(key, 0, System.currentTimeMillis() - window.toMillis());
         return zSet.zCard(key);
+    }
+
+    public long countRecent(String service) {
+        long from = System.currentTimeMillis() - window.toMillis();
+        Long count = stringRedisTemplate.opsForZSet().count(KEY_PREFIX + service, from, Double.POSITIVE_INFINITY);
+        return Objects.isNull(count) ? 0 : count;
     }
 }
