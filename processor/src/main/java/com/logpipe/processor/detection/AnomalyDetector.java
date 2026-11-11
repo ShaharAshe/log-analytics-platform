@@ -1,6 +1,8 @@
 package com.logpipe.processor.detection;
 
 import com.logpipe.processor.config.DetectionProperties;
+import com.logpipe.processor.dto.Incident;
+import com.logpipe.processor.service.IncidentStore;
 import com.logpipe.processor.service.ErrorWindow;
 import com.logpipe.processor.service.ServiceRegistry;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -17,11 +19,16 @@ public class AnomalyDetector {
     private final ServiceRegistry serviceRegistry;
     private final ErrorWindow errorWindow;
     private final DetectionProperties properties;
+    private final IncidentStore incidentStore;
 
-    public AnomalyDetector(ServiceRegistry serviceRegistry, ErrorWindow errorWindow, DetectionProperties properties) {
+    public AnomalyDetector(ServiceRegistry serviceRegistry,
+                           ErrorWindow errorWindow,
+                           DetectionProperties properties,
+                           IncidentStore incidentStore) {
         this.serviceRegistry = serviceRegistry;
         this.errorWindow = errorWindow;
         this.properties = properties;
+        this.incidentStore = incidentStore;
     }
 
     @Scheduled(fixedDelayString = "${logpipe.detection.check-interval}")
@@ -29,8 +36,11 @@ public class AnomalyDetector {
     public void check() {
         for (String service : serviceRegistry.allServices()) {
             long errors = errorWindow.countRecent(service);
-            if (errors >= properties.minErrors()) {
-                logger.warn("Error spike for {}: {} errors in the last {}", service, errors, properties.window());
+            if (errors >= properties.minErrors()
+                    && incidentStore.findOpen(service).isEmpty()) {
+                Incident incident = incidentStore.open(service);
+                logger.warn("FIRING {}: {} errors in the last {}s, incident {}",
+                        service, errors, properties.window().toSeconds(), incident.id());
             }
         }
     }

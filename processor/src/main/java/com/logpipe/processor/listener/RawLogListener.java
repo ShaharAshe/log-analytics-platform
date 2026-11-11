@@ -40,7 +40,8 @@ public class RawLogListener {
             throw new InvalidLogEventException(message);
         }
         logger.info("Partition: {} Offset: {} Key: {} Service: {} Level: {} Message: {} TraceId: {} DurationMs: {}",
-                record.partition(), record.offset(), record.key(), logEvent.service(), logEvent.level(), logEvent.message(), logEvent.traceId(), logEvent.durationMs());
+                record.partition(), record.offset(), record.key(), logEvent.service(), logEvent.level(),
+                logEvent.message(), logEvent.traceId(), logEvent.durationMs());
         serviceRegistry.recordSeen(logEvent.service(), record.timestamp());
         if (Objects.equals(logEvent.level(), Level.ERROR.name())) {
             long countServiceErrors = errorCounter.increment(logEvent.service());
