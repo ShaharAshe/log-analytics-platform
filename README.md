@@ -3,11 +3,12 @@
 A log ingestion and analysis pipeline built with Java, Spring Boot, Kafka and Redis.
 Services send their logs over HTTP; the platform buffers them in Kafka, processes them
 in a separate service, and tracks each service's errors in real time, including a
-one-minute sliding window. Anomaly detection is next.
+one-minute sliding window. A scheduled detector opens an incident when a service's
+errors spike, and resolves it once the service has been quiet for a while.
 
-> **Status: work in progress.** Ingestion, processing, failure handling and per-service
-> error counts work end to end. See the [roadmap](#roadmap) for what is built and what
-> comes next.
+> **Status: work in progress.** Ingestion, processing, failure handling, per-service
+> error counts and incident detection (firing and resolved) work end to end. See the
+> [roadmap](#roadmap) for what is built and what comes next.
 
 ## Why
 
@@ -29,13 +30,15 @@ flowchart LR
   K -->|group: log-processor| P[processor]
   P -->|failed messages| D[(Kafka<br/>raw-logs-dlt)]
   P -->|error counters| R[(Redis)]
-  R -.-> A[Anomaly detection]
+  R <-->|every 10 s| A[Anomaly detector]
   A -.-> AL[(Kafka<br/>alerts)]
+  AL -.-> N[Notifier<br/>Slack]
   AL -.-> AI[AI incident<br/>investigator]
-  P -.-> DB[(Postgres<br/>aggregates)]
+  AL -.-> DB[(Postgres<br/>incident history)]
+  DB -.-> API[REST API<br/>and UI]
 
   classDef planned stroke-dasharray: 5 5
-  class A,AL,AI,DB planned
+  class AL,N,AI,DB,API planned
 ```
 
 Solid lines are built. Dashed components are planned.
@@ -46,7 +49,8 @@ Solid lines are built. Dashed components are planned.
 | **Kafka** | Durable, append-only log. Absorbs spikes, decouples intake from processing, and keeps raw logs for replay. |
 | **processor** | Spring Boot service. Consumes `raw-logs` as part of the `log-processor` consumer group. |
 | **raw-logs-dlt** | Dead letter topic. Holds messages that could not be processed, unchanged, with the error details in headers. |
-| **Redis** | Holds per-service error counts (total and last minute) outside the processor, so they survive restarts and rebalances. |
+| **Redis** | Holds per-service error counts (total and last minute), the list of known services, open incidents, and the scheduler lock, outside the processor, so they survive restarts and rebalances. |
+| **Anomaly detector** | Scheduled job inside the processor. Every 10 seconds it checks each service's error window and opens or resolves incidents. Runs on one instance at a time (ShedLock). |
 
 Ingest and processor are separate services on purpose: a processing failure or
 redeploy does not stop log intake, and each service scales on its own axis (HTTP load
@@ -82,7 +86,9 @@ A diagram of the full flow, including every failure path, is in
    services, so ingest can change its internal classes freely.
 4. For each message, `RawLogListener` rejects logs without a `service` (see
    [Error handling](#error-handling)), then logs the partition, offset, service and level.
-   For `ERROR` logs, it updates two values in Redis:
+   It records the service in the sorted set `services` (score: last seen time), so the
+   detector knows which services exist. For `ERROR` logs, it also updates two values in
+   Redis:
    - A total counter (`error:<service>`), with `INCR`.
    - A one-minute sliding window (`error-window:<service>`), a sorted set with one
      member per error. The member is `partition:offset`, so a redelivered message is
@@ -121,6 +127,50 @@ quickly instead of after the Lettuce default of 60 s.
 The DLT stores the original bytes for messages that could not be deserialized, and a
 JSON copy of the `LogEvent` for messages the listener rejected.
 
+## Anomaly detection
+
+A scheduled job, `AnomalyDetector`, runs every 10 seconds. For each service in the
+`services` set it counts the errors in the last minute (`ZCOUNT` on the sliding window)
+and compares the count to a threshold. A spike is not alerted on every check: each one
+becomes an **incident** with a lifecycle.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Firing: errors ≥ threshold<br/>(new incident id)
+  Firing --> Below: errors < threshold<br/>(belowSince recorded)
+  Below --> Firing: errors ≥ threshold again<br/>(belowSince cleared)
+  Below --> [*]: below for 30 s<br/>(RESOLVED)
+```
+
+- **One incident per spike.** An open incident is a Redis hash, `incident:<service>`,
+  with an `id` (UUID), `openedAt`, and `belowSince` while the service is below the
+  threshold. While it exists, the service is not alerted again.
+- **Hysteresis.** An incident resolves only after the service has stayed below the
+  threshold for 30 seconds in a row (`resolve-after`). A service that drops below and
+  spikes again (flapping) keeps the same incident instead of firing a new alert.
+- **Time, not check count.** "30 seconds" keeps its meaning if `check-interval`
+  changes. In the worst case an incident resolves after `resolve-after` plus one
+  `check-interval`.
+- **Decision separated from execution.** `IncidentDecider` is a pure function: given
+  whether the service is above the threshold, its open incident, and the current time,
+  it returns an action (`OPEN`, `START_BELOW`, `RESET_BELOW`, `RESOLVE`, `NONE`). It
+  uses no Redis and no clock, so every case is unit tested. `AnomalyDetector` reads the
+  state, asks for a decision, and carries it out.
+- **One instance at a time.** With several processor instances, the job would run on
+  each of them. ShedLock takes a lock in Redis (`job-lock:logpipe:anomaly-detector`)
+  so only one runs a check.
+
+The detector logs `FIRING` (WARN) and `RESOLVED` (INFO, with the incident's duration):
+
+```
+WARN  FIRING payment-api: 12 errors in the last 60s, incident 593289a2-...
+INFO  RESOLVED payment-api: after 162s, 0 errors in the last 60s, incident 593289a2-...
+```
+
+The threshold is currently a fixed minimum (`min-errors`). A per-service baseline
+(EWMA), and publishing incidents to an `alerts` topic, are next on the
+[roadmap](#roadmap).
+
 ## Design decisions
 
 Each decision is recorded with its context, rationale and trade-offs in
@@ -141,6 +191,8 @@ Each decision is recorded with its context, rationale and trade-offs in
 - Java 17, Spring Boot 4, Spring for Apache Kafka
 - Apache Kafka 3.9 (KRaft mode, no ZooKeeper)
 - Redis 7.4, Spring Data Redis
+- ShedLock 7.7 (Redis provider) for the scheduled detector
+- JUnit 5 and AssertJ
 - Docker Compose for local infrastructure
 - Maven (via the Maven Wrapper)
 
@@ -225,7 +277,24 @@ The first returns the total number of `ERROR` logs for `payment-api`. The second
 the errors of the last minute that are still in the window: `partition:offset`, then the
 Kafka timestamp in milliseconds. A key with no errors for two minutes expires.
 
-### 6. See a failed message in the dead letter topic
+### 6. Trigger an incident
+
+Send 12 errors within a minute (the threshold is 10). On Windows PowerShell:
+
+```powershell
+1..12 | ForEach-Object { Invoke-RestMethod -Method Post -Uri http://localhost:8080/events/logs -ContentType "application/json" -Body '{"service":"payment-api","level":"ERROR","message":"timeout"}' }
+```
+
+Within 10 seconds the processor logs `FIRING payment-api`. The open incident is in Redis:
+
+```bash
+docker exec -it redis redis-cli HGETALL incident:payment-api
+```
+
+About a minute later the errors leave the window, and after 30 more seconds below the
+threshold the processor logs `RESOLVED payment-api`, and the key is deleted.
+
+### 7. See a failed message in the dead letter topic
 
 Send a message that is not JSON:
 
@@ -244,6 +313,17 @@ docker exec -it kafka /opt/kafka/bin/kafka-console-consumer.sh \
 
 The headers include the exception and its stack trace. Some headers (partition,
 offset, timestamp) are binary numbers and are not readable in the console.
+
+### 8. Run the tests
+
+```bash
+cd processor
+./mvnw test -Dtest=IncidentDeciderTest
+```
+
+`IncidentDeciderTest` needs no infrastructure. Without `-Dtest`, Maven also runs
+`ProcessorApplicationTests`, which starts the whole application and needs Kafka and
+Redis running.
 
 ## API
 
@@ -273,6 +353,15 @@ confirmed asynchronously.
 | `logpipe.partitions` | processor | `12` | Partition count of `raw-logs-dlt`. Must match `raw-logs`. |
 | `spring.data.redis.host` / `port` | processor | `localhost` / `6379` | Redis connection |
 | `spring.data.redis.timeout` / `connect-timeout` | processor | `2s` | How long a Redis command or connection may take before it counts as an outage |
+| `logpipe.detection.window` | processor | `60s` | Length of the sliding error window |
+| `logpipe.detection.check-interval` | processor | `10s` | How often the detector runs |
+| `logpipe.detection.min-errors` | processor | `10` | Errors in the window that open an incident |
+| `logpipe.detection.resolve-after` | processor | `30s` | Time below the threshold before an incident resolves. Must be at least `check-interval`. |
+| `logpipe.detection.spike-factor` / `ewma-alpha` | processor | `5` / `0.1` | Reserved for the per-service baseline (EWMA). Validated, not used yet. |
+
+The detection settings are validated on startup (`DetectionProperties`): an invalid
+value, such as a zero window, stops the processor with a clear error instead of
+misbehaving at runtime.
 
 ## Project structure
 
@@ -288,13 +377,19 @@ log-analytics-platform/
 │       ├── controller/       REST endpoint
 │       ├── dto/              LogEvent
 │       └── service/          Kafka producer
-└── processor/                Kafka consumer
-    └── src/main/java/com/logpipe/processor/
-        ├── config/           Error handling: retries by failure type, dead letter topic
-        ├── dto/              LogEvent (the processor's own copy), Level
-        ├── exception/        InvalidLogEventException
-        ├── listener/         RawLogListener
-        └── service/          ErrorCounter, ErrorWindow (Redis)
+└── processor/                Kafka consumer and anomaly detector
+    ├── src/main/java/com/logpipe/processor/
+    │   ├── config/           Error handling (retries by failure type, DLT), scheduling
+    │   │                     and ShedLock, validated detection properties
+    │   ├── detection/        AnomalyDetector (scheduled job), IncidentDecider (pure logic)
+    │   ├── dto/              LogEvent (the processor's own copy), Level, Incident,
+    │   │                     IncidentAction
+    │   ├── exception/        InvalidLogEventException
+    │   ├── listener/         RawLogListener
+    │   └── service/          Redis access: ErrorCounter, ErrorWindow, ServiceRegistry,
+    │                         IncidentStore
+    └── src/test/java/com/logpipe/processor/
+        └── detection/        IncidentDeciderTest
 ```
 
 ## Roadmap
@@ -310,10 +405,16 @@ log-analytics-platform/
 - [x] Redis: per-service error counters
 - [x] Separate infrastructure failures (Redis down) from bad messages in error handling
 - [x] Redis: one-minute sliding window per service, idempotent under redelivery
-- [ ] Anomaly detection: a per-service baseline (EWMA) with a minimum floor, checked
-      by a scheduled job that runs on one instance (ShedLock)
-- [ ] Alerts with an incident lifecycle (firing, resolved), published to an `alerts` topic
+- [x] Validated detection settings, failing fast on startup
+- [x] Registry of known services, by last-seen time
+- [x] Scheduled detector that runs on one instance at a time (ShedLock)
+- [x] Incident lifecycle: one alert per spike, resolved after 30 s below the threshold,
+      with hysteresis against flapping. Decision logic unit tested
+- [ ] Publish incidents (firing, resolved) to an `alerts` topic
+- [ ] Per-service baseline (EWMA) with a minimum floor, frozen during an open incident
 - [ ] Notifier: sends each incident to Slack once, idempotent under redelivery
+- [ ] Tests for the existing code: configuration validation, the Redis window
+      (Testcontainers), the listener, failure classification, and the detector (Mockito)
 - [ ] Docker images for both services
 - [ ] Deployment to AWS with Terraform, designed for low cost
 - [ ] CI with GitHub Actions, and integration tests against real Kafka and Redis
@@ -323,4 +424,8 @@ log-analytics-platform/
 - [ ] AI incident investigator: an agent that reads the error windows, the DLT and the
       project's docs, triggered by alerts, with evals that measure its accuracy. Its
       findings follow the alert as a Slack thread reply; the alert never waits for it
-- [ ] Postgres: hourly aggregates with idempotent writes
+- [ ] External access: API keys per client (Spring Security, stored hashed in
+      Postgres), a rate limit per key, a REST API for incidents, and live updates (SSE)
+- [ ] A thin web UI (React, TypeScript): open incidents, history, and the AI summary
+- [ ] Sign-in with OAuth2 / OpenID Connect through an identity provider, and web
+      security hardening (security headers such as CSP, CORS, CSRF, OWASP Top 10 review)
