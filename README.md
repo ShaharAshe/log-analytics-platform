@@ -149,8 +149,8 @@ stateDiagram-v2
   threshold for 30 seconds in a row (`resolve-after`). A service that drops below and
   spikes again (flapping) keeps the same incident instead of firing a new alert.
 - **Time, not check count.** "30 seconds" keeps its meaning if `check-interval`
-  changes. In the worst case an incident resolves after `resolve-after` plus one
-  `check-interval`.
+  changes. Once the errors leave the window, an incident resolves within
+  `resolve-after` plus one `check-interval` (up to about 40 seconds).
 - **Decision separated from execution.** `IncidentDecider` is a pure function: given
   whether the service is above the threshold, its open incident, and the current time,
   it returns an action (`OPEN`, `START_BELOW`, `RESET_BELOW`, `RESOLVE`, `NONE`). It
