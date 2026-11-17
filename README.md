@@ -1,5 +1,7 @@
 # Log Analytics Platform
 
+[![CI](https://github.com/ShaharAshe/log-analytics-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/ShaharAshe/log-analytics-platform/actions/workflows/ci.yml)
+
 A log ingestion and analysis pipeline built with Java, Spring Boot, Kafka and Redis.
 Services send their logs over HTTP; the platform buffers them in Kafka, processes them
 in a separate service, and tracks each service's errors in real time, including a
@@ -193,6 +195,7 @@ Each decision is recorded with its context, rationale and trade-offs in
 - Redis 7.4, Spring Data Redis
 - ShedLock 7.7 (Redis provider) for the scheduled detector
 - JUnit 5 and AssertJ
+- GitHub Actions for CI
 - Docker Compose for local infrastructure
 - Maven (via the Maven Wrapper)
 
@@ -325,6 +328,23 @@ cd processor
 `ProcessorApplicationTests`, which starts the whole application and needs Kafka and
 Redis running.
 
+The same tests run in CI on every pull request (see
+[Development workflow](#development-workflow)).
+
+## Development workflow
+
+`main` is protected: every change goes through a branch and a pull request.
+
+1. A pull request triggers the CI workflow (`.github/workflows/ci.yml`). It runs two
+   jobs in parallel, `test-ingest` and `test-processor`, each on a fresh Ubuntu runner
+   with JDK 17 and the Maven Wrapper. Kafka and Redis start with Docker Compose.
+2. A ruleset on `main` blocks merging until both checks pass, and requires the branch
+   to be up to date with `main`, so what was tested is what gets merged.
+3. Direct pushes, force pushes and deletion of `main` are blocked, with no bypass,
+   including for the repository owner.
+4. History stays linear: pull requests are merged by rebase or squash.
+5. After a merge, CI runs again on `main`.
+
 ## API
 
 ### `POST /events/logs`
@@ -367,6 +387,8 @@ misbehaving at runtime.
 
 ```
 log-analytics-platform/
+├── .github/workflows/
+│   └── ci.yml                CI: tests of both services on every pull request
 ├── docker-compose.yml        Kafka (KRaft) with a persistent volume, and Redis
 ├── docs/
 │   ├── decisions.md          Architecture decision records
@@ -417,7 +439,8 @@ log-analytics-platform/
       (Testcontainers), the listener, failure classification, and the detector (Mockito)
 - [ ] Docker images for both services
 - [ ] Deployment to AWS with Terraform, designed for low cost
-- [ ] CI with GitHub Actions, and integration tests against real Kafka and Redis
+- [x] CI with GitHub Actions on every pull request, and a protected `main` branch
+- [ ] Integration tests against real Kafka and Redis with Testcontainers
 - [ ] Metrics and Grafana dashboards: throughput, consumer lag, DLT rate, retries
 - [ ] Log search with Grafana Loki, and request tracing across Kafka with OpenTelemetry
 - [ ] Load tests with documented throughput and latency
