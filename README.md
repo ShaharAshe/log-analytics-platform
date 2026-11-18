@@ -444,6 +444,9 @@ log-analytics-platform/
 - [ ] Metrics and Grafana dashboards: throughput, consumer lag, DLT rate, retries
 - [ ] Log search with Grafana Loki, and request tracing across Kafka with OpenTelemetry
 - [ ] Load tests with documented throughput and latency
+- [ ] Long-term log archive: a separate consumer group writes raw logs to S3 as
+      Parquet, partitioned by date and service, idempotent under redelivery, and
+      queryable with DuckDB or Athena
 - [ ] AI incident investigator: an agent that reads the error windows, the DLT and the
       project's docs, triggered by alerts, with evals that measure its accuracy. Its
       findings follow the alert as a Slack thread reply; the alert never waits for it
