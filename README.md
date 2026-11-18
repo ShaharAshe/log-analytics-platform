@@ -449,6 +449,8 @@ log-analytics-platform/
       findings follow the alert as a Slack thread reply; the alert never waits for it
 - [ ] External access: API keys per client (Spring Security, stored hashed in
       Postgres), a rate limit per key, a REST API for incidents, and live updates (SSE)
-- [ ] A thin web UI (React, TypeScript): open incidents, history, and the AI summary
+- [ ] A thin web UI (React, TypeScript): open incidents, history, and the AI summary,
+      with unit tests (Vitest) and end-to-end tests (Playwright) in CI, including one
+      that follows an error spike from ingest to the incident page
 - [ ] Sign-in with OAuth2 / OpenID Connect through an identity provider, and web
       security hardening (security headers such as CSP, CORS, CSRF, OWASP Top 10 review)
